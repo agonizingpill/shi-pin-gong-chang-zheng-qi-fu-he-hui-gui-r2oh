@@ -8,7 +8,8 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from .config import ARTIFACT_DIR, QUEUE, Session, redis, utc_now
+from . import allocation
+from .config import ALLOC_QUEUE, ARTIFACT_DIR, QUEUE, Session, redis, utc_now
 from .constants import PlanState
 from .models import LoadPlan
 from .shift_work import audit
@@ -72,11 +73,14 @@ def main():
             plan = claim()
             if plan:
                 execute(plan)
+            alloc = allocation.claim()
+            if alloc:
+                allocation.execute(alloc)
             heartbeat.touch()
         except (SQLAlchemyError, OSError):
             log.exception('worker persistence failed')
         try:
-            redis.blpop(QUEUE, timeout=1)
+            redis.blpop([QUEUE, ALLOC_QUEUE], timeout=1)
         except RedisError:
             from time import sleep
             sleep(1)

@@ -2,13 +2,13 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy import select, text
 
-from . import planning, shift_work
+from . import allocation, planning, shift_work
 from .auth import DomainError, allow, current_user, login
 from .config import ARTIFACT_DIR, Session, engine, redis
 from .constants import Role
-from .models import AuditEntry, EnergyReview, LoadPlan, ProductionShift
-from .schemas import CloseReview, CorrectRun, Login, OpenShift, RecordReading, RecordRun, RequestPlan, VerifySpike
-from .views import fields, meter_view, plan_view, review_view, run_view, shift_view, user_view
+from .models import AuditEntry, EnergyReview, LoadPlan, MasterMeterRead, ProductionShift, SharedAllocation
+from .schemas import CloseReview, CorrectRun, Login, OpenShift, RecordMasterReading, RecordReading, RecordRun, RequestPlan, VerifySpike
+from .views import allocation_view, fields, master_reading_view, meter_view, plan_view, review_view, run_view, shift_view, user_view
 
 router = APIRouter()
 writer = allow(Role.OPERATOR, Role.SUPERVISOR)
@@ -91,7 +91,11 @@ def correct_run(shift_id: int, run_id: int, data: CorrectRun, user=Depends(super
 def handover(shift_id: int, user=Depends(writer)):
     with Session.begin() as db:
         shift = shift_work.get_shift(db, shift_id, lock=True)
-        return shift_view(db, shift_work.seal_shift(db, shift, user))
+        result = shift_view(db, shift_work.seal_shift(db, shift, user))
+        queued = allocation.sync_shift_windows(db, shift, user)
+    for allocation_id in queued:
+        allocation.queue_hint(allocation_id)
+    return result
 
 
 @router.get('/plans')
@@ -159,6 +163,40 @@ def close(review_id: int, data: CloseReview, user=Depends(supervisor)):
     with Session.begin() as db:
         review = planning.get_review(db, review_id, lock=True)
         return review_view(db, planning.close_review(db, review, data, user))
+
+
+@router.get('/master-readings')
+def master_readings(_user=Depends(current_user)):
+    with Session() as db:
+        rows = db.scalars(select(MasterMeterRead).order_by(MasterMeterRead.reading_at.desc()).limit(96))
+        return [master_reading_view(row) for row in rows]
+
+
+@router.post('/master-readings', status_code=201)
+def record_master_reading(data: RecordMasterReading, user=Depends(writer)):
+    with Session.begin() as db:
+        row = allocation.add_master_reading(db, data, user)
+        queued = allocation.sync_reading_windows(db, row.reading_at, user)
+        result = master_reading_view(row)
+    for allocation_id in queued:
+        allocation.queue_hint(allocation_id)
+    return result
+
+
+@router.get('/allocations')
+def allocations(_user=Depends(current_user)):
+    with Session() as db:
+        rows = db.scalars(select(SharedAllocation).order_by(SharedAllocation.window_start.desc()).limit(72))
+        return [allocation_view(db, row) for row in rows]
+
+
+@router.get('/allocations/{allocation_id}')
+def show_allocation(allocation_id: int, _user=Depends(current_user)):
+    with Session() as db:
+        alloc = db.get(SharedAllocation, allocation_id)
+        if alloc is None:
+            raise DomainError('allocation_not_found', '找不到该小时的分摊记录', 404)
+        return allocation_view(db, alloc, detail=True)
 
 
 @router.get('/audit')

@@ -25,6 +25,15 @@ class ReviewState(StrEnum):
     CLOSED = 'closed'
 
 
+class AllocState(StrEnum):
+    WAITING = 'waiting'
+    QUEUED = 'queued'
+    RUNNING = 'running'
+    ALLOCATED = 'allocated'
+    TOTAL_ONLY = 'total_only'
+    FAILED = 'failed'
+
+
 class SpikeFinding(StrEnum):
     PROCESS_SURGE = 'process_surge'
     INSTRUMENT_SUSPECT = 'instrument_suspect'

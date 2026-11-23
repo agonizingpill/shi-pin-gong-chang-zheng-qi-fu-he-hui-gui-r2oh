@@ -10,9 +10,9 @@
 
 | 角色 | 主要工位 | 典型动作 |
 | --- | --- | --- |
-| `operator` 值班员 | 班次采集、负荷估计 | 登记班次、逐小时抄表、录入启停、封账、提交估计 |
-| `supervisor` 能源主管 | 班次采集、负荷估计、节能复核 | 值班员权限、带理由更正启停、审批、逐条核验、签署结案、查审计 |
-| `viewer` 只读访客 | 三个业务工位 | 查阅台账、结果和复核单，下载估计证据 |
+| `operator` 值班员 | 班次采集、负荷估计、用汽分摊 | 登记班次、逐小时抄表、录入启停、封账、提交估计、抄总表 |
+| `supervisor` 能源主管 | 班次采集、负荷估计、用汽分摊、节能复核 | 值班员权限、带理由更正启停、审批、逐条核验、签署结案、查审计 |
+| `viewer` 只读访客 | 四个业务工位 | 查阅台账、结果和复核单，下载估计证据 |
 
 ## 启动
 
@@ -35,7 +35,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | `supervisor` | `SteamLead1064!` |
 | `viewer` | `SteamView1064!` |
 
-`SEED_DEMO=true` 时 API 启动会补齐演示数据。显式运行 seed 适用于重复演示或启动时 seed 日志报错后恢复。自然键按工号和班次编号识别，已有班次、样本和复核保留原状。演示账号由 seed 创建。
+`SEED_DEMO=true` 时 API 启动会补齐演示数据。显式运行 seed 适用于重复演示或启动时 seed 日志报错后恢复。自然键按工号和班次编号识别，已有班次、样本和复核保留原状。演示账号由 seed 创建。演示数据含 11 月 17–21 日两线重叠班次与总表抄表：17–18 日的共用小时因历史不足仅出总耗，19–20 日已分摊，21 日因调理线班次未封账停在等待补齐。
 
 ## 一次晚班交接
 
@@ -56,6 +56,16 @@ docker compose exec -T backend python -m scripts.seed_demo
 - Huber 对大残差采用线性惩罚。历史和目标班中，正向偏差达到 `max(60 kg, epsilon × scale_)` 的小时进入人工核验。复核单保存首末读数的外键、来源、判断、备注、核验者和时间。疑似仪表问题也保留原始值。
 - 实耗减基线是同工况的耗汽偏差。结案记录具体处置，供下一班核对。输入快照、SHA-256、参数、样本数、留出指标及估计曲线都随方案留存。
 
+## 共用总表分摊
+
+杀菌线和调理线的班次在同一小时重叠时，两线共用一块蒸汽总表。总表每个整点只抄一次（同一时点拒绝重抄，累计值倒挂被拒），系统为该小时把总表差值分摊到两条产线。
+
+- 任一线班次封账时，系统为每个与另一线重叠的小时建立分摊任务；两边并发封账命中 `window_start` 唯一约束，同一小时只排一次分摊。缺另一线的封账（启停以封账为准）或缺整点总表读数时，任务停在「等待补齐」并记录原因，待封账或抄表落账后自动入队。
+- 分摊模型取目标小时之前最多 60 个两线均封账且总表齐备的共用小时，以每线杀菌釜、CIP、漂烫机运行分钟为特征，对小时总耗拟合 `HuberRegressor`（`epsilon=1.35`、`alpha=0.0001`、最大迭代 `1000`，不足 12 个小时不拟合）。各线估算按模型贡献比例分摊当小时总表差值，两线相加严格等于该差值（B 线取差值余额，分毫不差）。
+- 两线工况总是一起变时无法区分各自用量：历史共用小时内两线运行时长相关系数达到 0.98，或某线工况无变化，该小时只出总耗并记录原因，不给各线估算。
+- 分摊任务与负荷方案一样经 MySQL 持久化、Redis 唤醒、租约认领。中断恢复后重新计算，两线估算仍在同一事务一起落库；输入快照与 SHA-256 随任务留存。
+- 「用汽分摊」页面按小时列出总表差值、各线估算量或等待／仅出总耗／失败的原因，值班员可在该页补录总表读数。
+
 ## 工程结构
 
 | 服务 | 实现 | 健康检查 |
@@ -66,7 +76,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | db | MySQL 8.0 | 应用账号执行 `SELECT 1` |
 | redis | Redis 7 | `PING` |
 
-`backend/src` 的 `models.py` 声明实体，`schemas.py` 校验输入，`shift_work.py` 和 `planning.py` 承担领域规则，`steam_model.py` 完成拟合。`routes.py` 和 `views.py` 暴露 API，`worker.py` 消费队列，`migrations/initial.py` 初始化当前版本的表。`frontend/src` 按 API、会话状态、复用组件与页面拆分。Nginx 代理 `/api/`，MySQL、Redis 和估计证据各用独立命名卷。任务先提交到 MySQL，再用 Redis 唤醒 worker，丢失唤醒时由 worker 轮询，进程中断可在租约超时后重领。
+`backend/src` 的 `models.py` 声明实体，`schemas.py` 校验输入，`shift_work.py` 和 `planning.py` 承担领域规则，`steam_model.py` 完成拟合，`allocation.py` 负责共用总表的分摊排程与计算。`routes.py` 和 `views.py` 暴露 API，`worker.py` 消费队列，`migrations/initial.py` 初始化当前版本的表。`frontend/src` 按 API、会话状态、复用组件与页面拆分。Nginx 代理 `/api/`，MySQL、Redis 和估计证据各用独立命名卷。任务先提交到 MySQL，再用 Redis 唤醒 worker，丢失唤醒时由 worker 轮询，进程中断可在租约超时后重领。
 
 | 环境变量 | 用途 |
 | --- | --- |
@@ -77,7 +87,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | `SEED_DEMO` | 自动生成演示记录 |
 | `DB_HOST`、`DB_NAME`、`DB_USER`、`REDIS_URL`、`ARTIFACT_DIR` | 服务内部连接和证据目录，由 Compose 注入 |
 
-共享枚举定义在 `backend/src/constants.py` 和 `frontend/src/constants.js`。后端对应 `models.py` 的约束、`schemas.py` 的请求校验、`auth.py`／`routes.py` 的访问控制、`shift_work.py`、`planning.py`、`worker.py` 的业务动作，以及 `scripts/seed_demo.py`。前端的角色用于 `components/ui.js` 和各业务页面权限渲染，产线、设备、班次状态用于 `pages/shifts.js`，产线、班次状态和方案状态用于 `pages/plans.js`，复核状态与尖峰判断用于 `pages/reviews.js`。
+共享枚举定义在 `backend/src/constants.py` 和 `frontend/src/constants.js`。后端对应 `models.py` 的约束、`schemas.py` 的请求校验、`auth.py`／`routes.py` 的访问控制、`shift_work.py`、`planning.py`、`allocation.py`、`worker.py` 的业务动作，以及 `scripts/seed_demo.py`。前端的角色用于 `components/ui.js` 和各业务页面权限渲染，产线、设备、班次状态用于 `pages/shifts.js`，产线、班次状态和方案状态用于 `pages/plans.js`，分摊状态与产线用于 `pages/usage.js`，复核状态与尖峰判断用于 `pages/reviews.js`。
 
 ## 本地开发与清理
 

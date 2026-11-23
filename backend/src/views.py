@@ -1,9 +1,9 @@
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 
-from .models import EnergyReview, ProductionShift, SteamMeter, User
+from .models import AllocationLine, EnergyReview, MasterMeterRead, ProductionShift, SharedAllocation, SteamMeter, User
 from .planning import get_plan, get_spikes
-from .shift_work import boundaries, get_readings, get_runs
+from .shift_work import HOUR, boundaries, get_readings, get_runs
 
 
 def fields(row, names):
@@ -52,6 +52,24 @@ def spike_view(db, spike):
     result = fields(spike, 'id observed_kg baseline_kg sample_scope finding findings_note verified_at')
     result.update(shift=shift.code, start_read=meter_view(left), end_read=meter_view(right),
                   verified_by=verifier.display_name if verifier else None)
+    return result
+
+
+def master_reading_view(row):
+    return fields(row, 'id reading_at cumulative_kg source_ref recorded_by recorded_at')
+
+
+def allocation_view(db, alloc, detail=False):
+    lines = db.scalars(select(AllocationLine).where(AllocationLine.allocation_id == alloc.id))
+    result = fields(alloc, 'id window_start state total_kg reason attempts updated_at')
+    result.update(window_end=alloc.window_start + HOUR,
+                  lines={row.line: row.estimated_kg for row in lines})
+    if detail:
+        reads = db.scalars(select(MasterMeterRead).where(
+            MasterMeterRead.reading_at.in_([alloc.window_start, alloc.window_start + HOUR]))
+            .order_by(MasterMeterRead.reading_at))
+        result.update(reads=[master_reading_view(row) for row in reads],
+                      result=alloc.result, input_sha256=alloc.input_sha256)
     return result
 
 

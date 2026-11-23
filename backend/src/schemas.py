@@ -14,6 +14,15 @@ def local_time(value: datetime) -> datetime:
 
 
 LocalTime = Annotated[datetime, AfterValidator(local_time)]
+
+
+def hour_aligned(value: datetime) -> datetime:
+    if value.minute:
+        raise ValueError('总表抄表时间须为整点小时边界')
+    return value
+
+
+HourTime = Annotated[datetime, AfterValidator(local_time), AfterValidator(hour_aligned)]
 Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=4, max_length=500)]
 
 
@@ -38,6 +47,12 @@ class OpenShift(Form):
 
 class RecordReading(Form):
     reading_at: LocalTime
+    cumulative_kg: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    source_ref: str = Field(min_length=3, max_length=100)
+
+
+class RecordMasterReading(Form):
+    reading_at: HourTime
     cumulative_kg: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
     source_ref: str = Field(min_length=3, max_length=100)
 

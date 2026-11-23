@@ -1,7 +1,7 @@
 import {ROLE} from '../constants.js';
 import {esc, day, interval} from '../utils.js';
 
-const pages = [['shifts', '班次采集'], ['plans', '负荷估计'], ['reviews', '节能复核']];
+const pages = [['shifts', '班次采集'], ['plans', '负荷估计'], ['usage', '用汽分摊'], ['reviews', '节能复核']];
 
 export function shell(active, user, content) {
   return `<header class="mast"><div class="mast-inner"><a class="brand" href="#shifts"><i class="mark" aria-hidden="true"></i><span>清禾食品 <small>· 公用工程</small></span></a>

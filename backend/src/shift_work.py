@@ -113,6 +113,14 @@ def save_run(db, shift, data, user, run_id=None):
     return row
 
 
+def window_runtime(runs, start, end):
+    runtime = {asset: 0.0 for asset in Equipment}
+    for run in runs:
+        overlap = min(end, run.ends_at) - max(start, run.starts_at)
+        runtime[run.asset] += max(0, overlap.total_seconds() / 60)
+    return runtime
+
+
 def capture_rows(db, shift):
     reads = {row.reading_at: row for row in get_readings(db, shift.id)}
     times = boundaries(shift)
@@ -132,10 +140,7 @@ def capture_rows(db, shift):
         delta = right.cumulative_kg - left.cumulative_kg
         if delta < Decimal(0):
             raise DomainError('meter_reversed', f'{shift.code} 小时差分为负', reading_id=right.id)
-        runtime = {asset: 0.0 for asset in Equipment}
-        for run in runs:
-            overlap = min(end, run.ends_at) - max(start, run.starts_at)
-            runtime[run.asset] += max(0, overlap.total_seconds() / 60)
+        runtime = window_runtime(runs, start, end)
         starts = sum(start <= item.starts_at < end for item in runs)
         rows.append({'shift': shift.code, 'start': start.isoformat(timespec='minutes'),
                      'start_read_id': left.id, 'end_read_id': right.id, 'kg': float(delta),

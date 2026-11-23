@@ -18,6 +18,7 @@ engine = create_engine(
 Session = sessionmaker(engine, expire_on_commit=False)
 redis = Redis.from_url(os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0'), socket_timeout=5)
 QUEUE = 'steam:load-plan:ready'
+ALLOC_QUEUE = 'steam:shared-alloc:ready'
 JWT_SECRET = os.getenv('JWT_SECRET', 'local-steam-board-secret-change-before-deploy')
 ARTIFACT_DIR = Path(os.getenv('ARTIFACT_DIR', './artifacts'))
 

@@ -5,7 +5,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, JSON, Numeric, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import utc_now
-from .constants import Equipment, Line, PlanState, ReviewState, Role, ShiftState, SpikeFinding
+from .constants import AllocState, Equipment, Line, PlanState, ReviewState, Role, ShiftState, SpikeFinding
 
 
 class Base(DeclarativeBase):
@@ -129,6 +129,47 @@ class ReviewSpike(Base):
     findings_note: Mapped[str | None] = mapped_column(Text)
     verified_by: Mapped[int | None] = mapped_column(ForeignKey('users.id'))
     verified_at: Mapped[datetime | None]
+
+
+class MasterMeterRead(Base):
+    """两线共用蒸汽总表的整点累计读数，同一时点只抄一次。"""
+    __tablename__ = 'master_meter_reads'
+    __table_args__ = (CheckConstraint('cumulative_kg >= 0'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reading_at: Mapped[datetime] = mapped_column(unique=True)
+    cumulative_kg: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    source_ref: Mapped[str] = mapped_column(String(100))
+    recorded_by: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    recorded_at: Mapped[datetime] = mapped_column(default=utc_now)
+
+
+class SharedAllocation(Base):
+    """一个共用小时的分摊任务与结果；window_start 唯一，并发封账也只排一次。"""
+    __tablename__ = 'shared_allocations'
+    __table_args__ = (choices('state', AllocState), Index('ix_alloc_poll', 'state', 'lease_until'))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(unique=True)
+    state: Mapped[str] = mapped_column(String(12), default=AllocState.WAITING)
+    total_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    reason: Mapped[str | None] = mapped_column(String(240))
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    input_sha256: Mapped[str | None] = mapped_column(String(64))
+    lease_until: Mapped[datetime | None]
+    claim_token: Mapped[str | None] = mapped_column(String(32))
+    attempts: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(default=utc_now, onupdate=utc_now)
+
+
+class AllocationLine(Base):
+    """一次分摊下某条产线的估算量；两线在同一事务内一起写入。"""
+    __tablename__ = 'allocation_lines'
+    __table_args__ = (UniqueConstraint('allocation_id', 'line'), choices('line', Line))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    allocation_id: Mapped[int] = mapped_column(ForeignKey('shared_allocations.id'))
+    line: Mapped[str] = mapped_column(String(12))
+    estimated_kg: Mapped[Decimal] = mapped_column(Numeric(12, 2))
 
 
 class AuditEntry(Base):

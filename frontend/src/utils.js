@@ -9,3 +9,4 @@ export const interval = (from, to) => `${clock(from)}–${from.slice(0, 10) === 
 export const options = (lookup, selected) => Object.entries(lookup).map(([key, label]) =>
   `<option value="${esc(key)}" ${key === selected ? 'selected' : ''}>${esc(label)}</option>`).join('');
 export const busyPlan = state => state === 'running' || state === 'queued';
+export const busyAlloc = state => state === 'waiting' || state === 'queued' || state === 'running';

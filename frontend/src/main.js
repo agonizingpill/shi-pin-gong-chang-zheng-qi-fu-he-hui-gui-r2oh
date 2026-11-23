@@ -5,11 +5,13 @@ import {loginPage} from './pages/login.js';
 import {plansPage} from './pages/plans.js';
 import {reviewsPage} from './pages/reviews.js';
 import {shiftsPage} from './pages/shifts.js';
+import {usagePage} from './pages/usage.js';
 import {setSession, store} from './store.js';
-import {busyPlan} from './utils.js';
+import {busyAlloc, busyPlan} from './utils.js';
 
 const app = document.querySelector('#app');
-const valid = ['shifts', 'plans', 'reviews'];
+const valid = ['shifts', 'plans', 'usage', 'reviews'];
+const endpoints = {shifts: '/shifts', plans: '/plans', usage: '/allocations', reviews: '/reviews'};
 const demo = {operator: 'SteamOps1064!', supervisor: 'SteamLead1064!', viewer: 'SteamView1064!'};
 let renderVersion = 0;
 let poll;
@@ -25,17 +27,18 @@ async function render() {
   }
   const [path, rawId] = location.hash.slice(1).split('/');
   const route = valid.includes(path) ? path : 'shifts';
+  const endpoint = endpoints[route];
   const role = store.user.role;
   try {
-    const [list, roster] = await Promise.all([api(`/${route}`), route === 'plans' ? api('/shifts') : Promise.resolve([])]);
+    const [list, roster] = await Promise.all([api(endpoint), route === 'plans' ? api('/shifts') : Promise.resolve([])]);
     const selected = (/^[1-9]\d*$/.test(rawId || '') ? Number(rawId) : null) || list[0]?.id;
-    const detail = selected ? await api(`/${route}/${selected}`) : null;
+    const detail = selected ? await api(`${endpoint}/${selected}`) : null;
     if (version !== renderVersion) return;
     store.lists[route] = list;
     store.detail[route] = detail;
     if (route === 'plans') store.lists.shifts = roster;
     const content = {
-      shifts: shiftsPage, plans: plansPage, reviews: reviewsPage,
+      shifts: shiftsPage, plans: plansPage, usage: usagePage, reviews: reviewsPage,
     }[route](store.lists[route], store.detail[route], role, roster,
       Number(new URLSearchParams(location.search).get('shift')));
     app.innerHTML = shell(route, store.user, content);
@@ -45,7 +48,7 @@ async function render() {
       resizeObserver.observe(canvas);
       drawLoadChart(canvas, detail.result.profile);
     }
-    if (route === 'plans' && busyPlan(detail?.state)) {
+    if ((route === 'plans' && busyPlan(detail?.state)) || (route === 'usage' && busyAlloc(detail?.state))) {
       const refreshStatus = () => {
         if (app.querySelector('form :focus')) poll = setTimeout(refreshStatus, 1800);
         else render();

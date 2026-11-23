@@ -1,5 +1,6 @@
 from hashlib import sha256
 from json import dumps
+from decimal import Decimal, ROUND_HALF_UP
 import warnings
 
 import numpy as np
@@ -12,6 +13,51 @@ FEATURES = ['杀菌釜运行分钟', 'CIP 清洗分钟', '漂烫机运行分钟'
 SEED = 1064
 EPSILON = 1.35
 MIN_SPIKE_KG = 60
+
+ALLOC_FEATURES = ['杀菌釜运行分钟', 'CIP 清洗分钟', '漂烫机运行分钟']
+ALLOC_MIN_HISTORY = 12
+ALLOC_MAX_HISTORY = 60
+ALLOC_COLLINEARITY = 0.98
+
+
+class AllocationIndistinguishable(Exception):
+    """历史工况无法区分两线各自用量，只能出总耗。"""
+
+
+def fit_allocation(rows):
+    """用历史同小时的两线启停与总耗拟合分摊模型；分不清各自用量时中止。"""
+    if len(rows) < ALLOC_MIN_HISTORY:
+        raise AllocationIndistinguishable(f'历史共用小时不足（{len(rows)}/{ALLOC_MIN_HISTORY}），无法拟合分摊')
+    xa = np.array([row['xa'] for row in rows], dtype=float)
+    xb = np.array([row['xb'] for row in rows], dtype=float)
+    y = np.array([row['kg'] for row in rows], dtype=float)
+    totals_a, totals_b = xa.sum(axis=1), xb.sum(axis=1)
+    if np.ptp(totals_a) < 1e-9 or np.ptp(totals_b) < 1e-9:
+        raise AllocationIndistinguishable('有产线在历史共用小时内工况无变化，无法区分各自用量')
+    correlation = float(np.corrcoef(totals_a, totals_b)[0, 1])
+    if abs(correlation) >= ALLOC_COLLINEARITY:
+        raise AllocationIndistinguishable(f'两线工况同步变化（相关系数 {correlation:.3f}），无法区分各自用量')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', ConvergenceWarning)
+        model = HuberRegressor(epsilon=EPSILON, alpha=0.0001, max_iter=1000).fit(np.hstack([xa, xb]), y)
+    return {'coef_a': [round(float(value), 6) for value in model.coef_[:3]],
+            'coef_b': [round(float(value), 6) for value in model.coef_[3:]],
+            'intercept': round(float(model.intercept_), 4),
+            'correlation': round(correlation, 4), 'samples': len(rows),
+            'outliers': int(model.outliers_.sum())}
+
+
+def split_total(model, xa, xb, total_kg):
+    """按两线模型贡献的比例分摊总量；两线估算相加严格等于当小时总表差值。"""
+    contrib_a = max(0.0, float(np.dot(model['coef_a'], xa)))
+    contrib_b = max(0.0, float(np.dot(model['coef_b'], xb)))
+    total = total_kg if isinstance(total_kg, Decimal) else Decimal(str(total_kg))
+    if contrib_a + contrib_b <= 1e-9:
+        share_a = (total / 2).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    else:
+        ratio = Decimal(str(contrib_a / (contrib_a + contrib_b)))
+        share_a = (total * ratio).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return share_a, total - share_a
 
 
 def fingerprint(snapshot):
